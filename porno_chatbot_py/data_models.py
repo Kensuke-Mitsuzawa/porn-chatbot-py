@@ -1,8 +1,9 @@
+from typing import List, Tuple
+import json
 import time
 import os
 import sqlite3
 import traceback
-from typing import List, Tuple
 from datetime import datetime
 from porno_chatbot_py import logger_unit
 logger = logger_unit.logger
@@ -43,9 +44,11 @@ class SqliteDbHandler(object):
     def __init__(self,
                  path_sqlite_file:str,
                  table_name_links:str="links",
-                 table_name_text:str="text"):
+                 table_name_text:str="text",
+                 table_name_training_pair="training_pair"):
         self.table_name_links = table_name_links
         self.table_name_text = table_name_text
+        self.table_name_training_pair = table_name_training_pair
         if not os.path.exists(path_sqlite_file):
             self.db_connection = sqlite3.connect(database=path_sqlite_file)
             self.create_db()
@@ -76,6 +79,15 @@ class SqliteDbHandler(object):
         cur.execute(sql.format(table_name=self.table_name_text))
         self.db_connection.commit()
 
+        cur = self.db_connection.cursor()
+        sql = """create table if not exists {table_name} (
+        url TEXT,
+        text_pair BLOB)"""
+        cur.execute(sql.format(table_name=self.table_name_training_pair))
+        self.db_connection.commit()
+        cur.close()
+
+
     def insert_candidate_link(self, candidate_link_obj:CandidateLinkObject)->bool:
         """* What you can do
         - It saves candidate link into DB
@@ -101,17 +113,6 @@ class SqliteDbHandler(object):
                 return False
 
             return True
-
-    def get_un_processed_story_link(self)->List[str]:
-        """* What you can do
-        - You can get link to story which not fetched yet.
-        """
-        sql_ = "SELECT url FROM {} WHERE status = ?".format(self.table_name_links)
-        cur = self.db_connection.cursor()
-        cur.execute(sql_, (False,))
-        seq_urls = [record_tuple[0] for record_tuple in cur]
-
-        return seq_urls
 
     def insert_novel_story_text(self, scraped_obj:ScrapedPageObject)->bool:
         sql_check = "SELECT count(url) FROM {} WHERE url = ?".format(self.table_name_text)
@@ -146,8 +147,73 @@ class SqliteDbHandler(object):
 
                 return True
 
+    def insert_training_pair(self, processed_text_obj)->bool:
+        seq_record_to_insert = []
+        ### training_pairでレコードの存在を確認 ###
+        for training_pair  in processed_text_obj.seq_conversation_obj:
+            sql_check = "SELECT count(url) FROM {} WHERE url = ? AND text_pair =?".format(self.table_name_training_pair)
+            cur = self.db_connection.cursor()
+            cur.execute(sql_check, (processed_text_obj.scraped_obj.url_link, training_pair.to_json()))
+            if cur.fetchone()[0] >= 1:
+                cur.close()
+                continue
+            else:
+                seq_record_to_insert.append(training_pair)
+
+        sql_insert = "INSERT INTO {}(url, text_pair) values(?, ?)".format(self.table_name_training_pair)
+        for training_pair in seq_record_to_insert:
+            cur = self.db_connection.cursor()
+            try:
+                cur.execute(sql_insert, (processed_text_obj.scraped_obj.url_link, training_pair.to_json()))
+                self.db_connection.commit()
+                cur.close()
+            except:
+                logger.error(traceback.format_exc())
+                self.db_connection.rollback()
+        return True
+
+    def get_un_processed_story_link(self)->List[str]:
+        """* What you can do
+        - You can get link to story which not fetched yet.
+        """
+        sql_ = "SELECT url FROM {} WHERE status = ?".format(self.table_name_links)
+        cur = self.db_connection.cursor()
+        cur.execute(sql_, (False,))
+        seq_urls = [record_tuple[0] for record_tuple in cur]
+
+        return seq_urls
+
+    def get_text_data(self)->List[ScrapedPageObject]:
+        sql_ = "SELECT url, novel_text, title, author, created_at, updated_at FROM {}".format(self.table_name_text)
+        cur = self.db_connection.cursor()
+        cur.execute(sql_)
+        seq_urls = [
+            ScrapedPageObject(
+                url_link=record_tuple[0],
+                title=record_tuple[2],
+                text=record_tuple[1],
+                author=record_tuple[3],
+                timestamp=record_tuple[4],
+                updated_at=record_tuple[5]
+            ) for record_tuple in cur]
+        return seq_urls
 
 
+class ConversationPair(object):
+    """It keeps pair of conversation"""
+    def __init__(self,
+                 conversation_text_a:str,
+                 conversation_text_b:str):
+        self.conversation_text_a = conversation_text_a
+        self.conversation_text_b = conversation_text_b
+
+    def to_json(self):
+        return json.dumps([self.conversation_text_a, self.conversation_text_b], ensure_ascii=False)
 
 
-
+class ProcessedTextObject(object):
+    def __init__(self,
+                 scraped_obj:ScrapedPageObject,
+                 seq_conversation_obj:List[ConversationPair]):
+        self.scraped_obj = scraped_obj
+        self.seq_conversation_obj = seq_conversation_obj

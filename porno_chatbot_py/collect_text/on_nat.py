@@ -1,4 +1,4 @@
-from porno_chatbot_py.collect_text import data_models
+from porno_chatbot_py import data_models
 from porno_chatbot_py import logger_unit
 from bs4 import BeautifulSoup
 from typing import List, Tuple, Dict, Any
@@ -7,9 +7,7 @@ import requests
 import re
 import os
 import time
-import sqlite3
 logger = logger_unit.logger
-
 
 
 def parse_top_page(top_page_html:str)->List[str]:
